@@ -1,6 +1,6 @@
 {
-  "name": "teamcity-cucumber-formatter",
-  "version": "1.0.3",
+  "name": "@dcopestake/teamcity-cucumber-formatter",
+  "version": "1.1.0-alpha.1",
   "description": "TeamCity formatter for Cucumber",
   "main": "dist/teamcity-cucumber-formatter.js",
   "scripts": {

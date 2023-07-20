@@ -1,91 +1,97 @@
 import { Formatter, Status, formatterHelpers } from '@cucumber/cucumber';
 import path from 'path';
+import fs from 'fs';
 
-let storedFeatureName: string = ``;
+let storedSuiteName: string = ``;
 
 export default class TeamCityFormatter extends Formatter {
     constructor(options) {
         super(options);
 
         options.eventBroadcaster.on('envelope', (envelope) => {
-            if (envelope.testCaseStarted) {
-                this.logTestCaseStarted(envelope.testCaseStarted.id)
-            }
             if (envelope.testCaseFinished) {
-                this.logTestCaseFinished(envelope.testCaseFinished.testCaseStartedId)
-            }
-            if (envelope.testRunFinished) {
-                this.log(`##teamcity[testSuiteFinished name='${storedFeatureName}']\n`);
+                this.logTestCase(envelope.testCaseFinished.testCaseStartedId)
             }
         });
     }
 
-    logTestSuiteChanged(currentFeature): void {
-        if (currentFeature.name !== storedFeatureName) {
-            if (storedFeatureName) {
-                this.log(`##teamcity[testSuiteFinished name='${storedFeatureName}']\n`);
-            }
-            storedFeatureName = this.escape(currentFeature.name);
-            this.log(`##teamcity[testSuiteStarted name='${storedFeatureName}']\n`);
-        }
-    }
-
-    logTestCaseStarted(id): void {
-        const { gherkinDocument: { feature: currentFeature }, pickle: { name: pickleName} } = this.eventDataCollector.getTestCaseAttempt(id);
-
-        this.logTestSuiteChanged(currentFeature);
-        this.log(`##teamcity[testStarted name='${this.escape(pickleName)}' captureStandardOutput='true']\n`);
-    }
-
-    logTestCaseFinished(testCaseStartedId): void {
+    logTestCase(testCaseStartedId): void {
         const testCaseAttempt = this.eventDataCollector.getTestCaseAttempt(testCaseStartedId);
-        const { pickle: { name: pickleName}, stepResults: currentStepResults } = testCaseAttempt;
+        if (testCaseAttempt.willBeRetried)
+            return;
 
-        for (const step of Object.values(currentStepResults)) {
-            if (step.status === Status.FAILED) {
-                this.logTestFailed(pickleName, testCaseAttempt, step.status);
-                this.logArtifacts(pickleName);
-            }
-            if (step.status === Status.AMBIGUOUS) {
-                this.logTestFailed(pickleName, testCaseAttempt, step.status);
-            }
+        const fullTestName = this.getFullTestName(testCaseAttempt);
+        const stepResults = Object.values(testCaseAttempt.stepResults);
+
+        this.log(`##teamcity[testStarted name='${this.escape(fullTestName)}' flowId='${testCaseStartedId}']\n`);
+
+        const stepFailed = stepResults.some(step => [Status.FAILED, Status.AMBIGUOUS].includes(step.status));
+        if (stepFailed) {
+            const failureDetails = formatterHelpers.formatIssue({
+                colorFns: this.colorFns,
+                number: 1,
+                snippetBuilder: this.snippetBuilder,
+                testCaseAttempt,
+                supportCodeLibrary: this.supportCodeLibrary
+            });
+            this.log(`##teamcity[testFailed name='${this.escape(fullTestName)}' details='${this.escape(failureDetails)}' flowId='${testCaseStartedId}']\n`);
+            this.logScreenshotArtifacts(testCaseAttempt);
         }
 
-        const testCaseDurationInSeconds = (Object.values(currentStepResults).map(obj => obj.duration.nanos)
-            .reduce((acc, curr) => acc + curr) / 1e9).toFixed(3);
-
-        this.logTestFinished(pickleName, testCaseDurationInSeconds);
+        const testCaseDurationInSeconds = (stepResults.map(obj => obj.duration.nanos).reduce((acc, curr) => acc + curr) / 1e9).toFixed(3);
+        this.log(`##teamcity[testFinished name='${this.escape(fullTestName)}' duration='${testCaseDurationInSeconds}' flowId='${testCaseStartedId}']\n`);
     }
 
-    logTestFailed(pickleName, testCaseAttempt, stepStatus): void {
-        const details = formatterHelpers.formatIssue({
-            colorFns: this.colorFns,
-            number: 1,
-            snippetBuilder: this.snippetBuilder,
-            testCaseAttempt,
-            supportCodeLibrary: this.supportCodeLibrary
-        });
-
-        this.log(`##teamcity[testFailed name='${this.escape(pickleName)}' message='${this.escape(pickleName + ' ' + stepStatus)}' details='${this.escape(details)}']\n`);
+    convertToCamelCase(value): string {
+      return value.replace(/(?:^\w|[A-Z]|\b\w)/g, (word, index) => index === 0 ? word.toLowerCase() : word.toUpperCase())
+        .replace(/[\s\W]+/g, '');
     }
 
-    logArtifacts(pickleName): void {
-        if (process.env.TEAMCITY_CUCUMBER_PATH_TO_SCREENSHOTS) {
-            const screeshotName: string = process.env.TEAMCITY_CUCUMBER_SCREENSHOT_NAME ? process.env.TEAMCITY_CUCUMBER_SCREENSHOT_NAME : pickleName;
-            const screenshotExtension: string = process.env.TEAMCITY_CUCUMBER_SCREENSHOT_EXTENSION ? process.env.TEAMCITY_CUCUMBER_SCREENSHOT_EXTENSION : `png`;
-            const pathToScreenshot: string = path.resolve(process.env.TEAMCITY_CUCUMBER_PATH_TO_SCREENSHOTS, `${screeshotName}.${screenshotExtension}`);
-            if (process.env.TEAMCITY_CUCUMBER_PUBLISH_ARTIFACTS_RUNTIME) {
-                const artifactsPathPostfix: string = process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER ? ` => ${process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER}` : ``;
-                this.log(`##teamcity[publishArtifacts '${this.escape(pathToScreenshot + artifactsPathPostfix)}']\n`);
-            }
-            const artifactsSubFolder: string = process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER ? `${process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER}/` : ``;
-            this.log(`##teamcity[testMetadata type='image' name='${this.escape(pickleName)}' value='${this.escape(artifactsSubFolder + `${screeshotName}.${screenshotExtension}`)}']\n`);
+    getFullTestName(testCaseAttempt): string {
+        const suiteName = testCaseAttempt.gherkinDocument.uri;
+        const packageName = suiteName.slice(suiteName.lastIndexOf('\\') + 1, suiteName.lastIndexOf('.'));
+        const className = this.convertToCamelCase(testCaseAttempt.gherkinDocument.feature.name);
+        const testName = this.getTestName(testCaseAttempt);
+        return `${suiteName}: ${packageName}.${className}.${testName}`;
+    }
+
+    getTestName(testCaseAttempt): string {
+        return this.convertToCamelCase(testCaseAttempt.pickle.name);
+    }
+
+    logScreenshotArtifacts(testCaseAttempt): void {
+        const screenshots = Object.values(testCaseAttempt.stepAttachments);
+        screenshots.flat().forEach(screenshot => this.logScreenshotArtifact(testCaseAttempt, screenshot));
+    }
+
+    logScreenshotArtifact(testCaseAttempt, screenshot): void {
+        const fullTestName = this.getFullTestName(testCaseAttempt);
+        const testName = this.getTestName(testCaseAttempt);
+        const supportedMediaTypes = ['image/png'];
+        if (!supportedMediaTypes.includes(screenshot.mediaType))
+            return;
+
+        const base64Encoding = 'base64';
+        if (screenshot.contentEncoding.toLowerCase() != base64Encoding) {
+            this.log(`Test: "${testName}" step: ${screenshot.testStepId} screenshot content encoding: ${screenshot.contentEncoding} is not supported`);
+            return;
         }
 
-    }
+        const screenshotsRootPath = process.env.TEAMCITY_CUCUMBER_PATH_TO_SCREENSHOTS ? process.env.TEAMCITY_CUCUMBER_PATH_TO_SCREENSHOTS : './screenshots'
+        if (!fs.existsSync(screenshotsRootPath)) {
+            fs.mkdirSync(screenshotsRootPath, { recursive: true })
+        }
 
-    logTestFinished(pickleName, durationInSeconds): void {
-        this.log(`##teamcity[testFinished name='${this.escape(pickleName)}' duration='${durationInSeconds}']\n`);
+        const screenshotExtension = screenshot.mediaType.substring(screenshot.mediaType.lastIndexOf('/') + 1);
+        const screenshotFileName = `${testName}.${screenshot.testStepId}.${screenshotExtension}`;
+        const screenshotFilePath = path.join(screenshotsRootPath, screenshotFileName);
+        fs.writeFileSync(screenshotFilePath, new Buffer(screenshot.body, base64Encoding));
+
+        const screenshotArtifactRootPath = process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER ? process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER : 'screenshots'
+        const screenshotArtifactPath = path.join(screenshotArtifactRootPath, screenshotFileName);
+        const screenshotArtifactRule = `${screenshotFilePath} => ${screenshotArtifactPath}`;
+        this.log(`##teamcity[publishArtifacts '${this.escape(screenshotArtifactRule)}']\n`);
+        this.log(`##teamcity[testMetadata type='image' testName='${this.escape(fullTestName)}' value='${this.escape(screenshotArtifactPath)}']\n`);
     }
 
     escape(text): string {
