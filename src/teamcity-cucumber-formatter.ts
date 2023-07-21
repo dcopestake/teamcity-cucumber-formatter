@@ -89,13 +89,13 @@ export default class TeamCityFormatter extends Formatter {
         const screenshotExtension = screenshot.mediaType.substring(screenshot.mediaType.lastIndexOf('/') + 1);
         const screenshotFileName = `${testName}.${screenshot.testStepId}.${screenshotExtension}`;
         const screenshotFilePath = path.join(screenshotsRootPath, screenshotFileName);
-        fs.writeFileSync(screenshotFilePath, new Buffer(screenshot.body, base64Encoding));
+        fs.writeFileSync(screenshotFilePath, Buffer.from(screenshot.body, base64Encoding));
 
         const screenshotArtifactRootPath = process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER ? process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER : 'screenshots'
         const screenshotArtifactPath = `${screenshotArtifactRootPath}/${screenshotFileName}`;
-        const screenshotArtifactRule = `${screenshotFilePath} => ${screenshotArtifactPath}`;
+        const screenshotArtifactRule = `${screenshotFilePath} => ${screenshotArtifactRootPath}`;
         this.log(`##teamcity[publishArtifacts '${this.escape(screenshotArtifactRule)}']\n`);
-        this.log(`##teamcity[testMetadata type='image' testName='${this.escape(fullTestName)}' name='${this.escape(screenshotFileName)}' value='${this.escape(screenshotArtifactPath)}']\n`);
+        this.log(`##teamcity[testMetadata type='image' testName='${this.escape(fullTestName)}' value='${this.escape(screenshotArtifactPath)}']\n`);
     }
 
     escape(text): string {
