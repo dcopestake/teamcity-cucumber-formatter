@@ -42,9 +42,13 @@ export default class TeamCityFormatter extends Formatter {
         this.log(`##teamcity[testFinished name='${this.escape(fullTestName)}' duration='${testCaseDurationInSeconds}' flowId='${testCaseStartedId}']\n`);
     }
 
-    convertToCamelCase(value): string {
-      return value.replace(/(?:^\w|[A-Z]|\b\w)/g, (word, index) => index === 0 ? word.toLowerCase() : word.toUpperCase())
-        .replace(/[\s\W]+/g, '');
+    convertToCamelCase(phrase, maxWords = 20): string {
+        return phrase.replace(/(?:^\w|[A-Z]|\b\w)/g, (letter, index) => index === 0 ? letter.toLowerCase() : letter.toUpperCase())
+            .replace(/[^\w\s]/g, '')
+            .replace(/\W{2,}/g, ' ')
+            .split(' ')
+            .slice(0, maxWords)
+            .join('');
     }
 
     getFullTestName(testCaseAttempt): string {
@@ -88,10 +92,10 @@ export default class TeamCityFormatter extends Formatter {
         fs.writeFileSync(screenshotFilePath, new Buffer(screenshot.body, base64Encoding));
 
         const screenshotArtifactRootPath = process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER ? process.env.TEAMCITY_CUCUMBER_ARTIFACTS_SUB_FOLDER : 'screenshots'
-        const screenshotArtifactPath = path.join(screenshotArtifactRootPath, screenshotFileName);
+        const screenshotArtifactPath = `${screenshotArtifactRootPath}/${screenshotFileName}`;
         const screenshotArtifactRule = `${screenshotFilePath} => ${screenshotArtifactPath}`;
         this.log(`##teamcity[publishArtifacts '${this.escape(screenshotArtifactRule)}']\n`);
-        this.log(`##teamcity[testMetadata type='image' testName='${this.escape(fullTestName)}' value='${this.escape(screenshotArtifactPath)}']\n`);
+        this.log(`##teamcity[testMetadata type='image' testName='${this.escape(fullTestName)}' name='${this.escape(screenshotFileName)}' value='${this.escape(screenshotArtifactPath)}']\n`);
     }
 
     escape(text): string {
